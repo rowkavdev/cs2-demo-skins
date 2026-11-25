@@ -1,0 +1,10 @@
+{
+  "operations": [
+    {
+      "op": "set",
+      "player": "NiKo",
+      "paint": 0,
+      "from": "0:00"
+    }
+  ]
+}

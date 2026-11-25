@@ -1,0 +1,13 @@
+{
+  "operations": [
+    {
+      "op": "set",
+      "player": "s1mple",
+      "paint": "asiimov",
+      "weapon": "awp",
+      "from": "5:00",
+      "to": "8:30",
+      "wear": 0.01
+    }
+  ]
+}
