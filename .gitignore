@@ -1,0 +1,8 @@
+node_modules/
+dist/
+coverage/
+*.dem
+*.dem.bz2
+*.dem.zst
+*.log
+.DS_Store

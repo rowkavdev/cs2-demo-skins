@@ -1,0 +1,37 @@
+{
+  "name": "cs2-demo-skins",
+  "version": "0.1.0",
+  "description": "Read and rewrite weapon skins in Counter-Strike 2 demo files without changing which weapon is equipped.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "cs2skin": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "cs2skin": "node --experimental-strip-types src/cli.ts"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "snappyjs": "^0.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}
