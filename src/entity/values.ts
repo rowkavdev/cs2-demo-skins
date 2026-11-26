@@ -112,6 +112,20 @@ function encodingOf(spec: FieldSpec): Encoding {
   throw unknownFieldEncoding(spec);
 }
 
+/** IEEE-754 bits of a signed 32-bit integer, as a float32. Sticker kit ids are stored this way. */
+export function intBitsToFloat(value: number): number {
+  const view = new DataView(new ArrayBuffer(4));
+  view.setInt32(0, value | 0, true);
+  return view.getFloat32(0, true);
+}
+
+/** Signed 32-bit integer stored in a float32's bits. */
+export function floatToIntBits(value: number): number {
+  const view = new DataView(new ArrayBuffer(4));
+  view.setFloat32(0, value, true);
+  return view.getInt32(0, true);
+}
+
 function readFloat32(reader: BitReader): number {
   const bits = reader.readBits(32) >>> 0;
   const view = new DataView(new ArrayBuffer(4));

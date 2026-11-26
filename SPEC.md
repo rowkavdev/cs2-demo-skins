@@ -2,7 +2,7 @@
 
 This file is the contract for parallel work. Read it before editing. Import shared names from `src/contract.ts`. Use ESM with `.js` specifiers in TypeScript imports (`./foo.js` points at `./foo.ts`). NodeNext resolution. Vitest tests live in `test/`. Do not add a web app. Do not commit demo files.
 
-The product rewrites cosmetic fields on CS2 `.dem` files. It must never write `m_iItemDefinitionIndex` or the other names in `PROTECTED_FIELD_NAMES`. A paint kit, seed, wear, or StatTrak value may change. The weapon the player is holding may not.
+The product rewrites cosmetic fields on CS2 `.dem` files. Paint, seed, wear, StatTrak, and sticker edits must not write `m_iItemDefinitionIndex` or the other names in `PROTECTED_FIELD_NAMES`. A gun's definition index stays. The knife operation may change `m_iItemDefinitionIndex` only from one knife to another knife. The entity class is not changed.
 
 ## Module map
 
@@ -223,19 +223,23 @@ Handle index is `Number(handle) & 0x7fff`. Treat `0xffffffff` and index `0x7fff`
 
 A skinnable entity has a definition index. Ownership at a tick is the pawn from `m_hOwnerEntity`, else the pawn whose active weapon or `m_hMyWeapons` contains the entity. The player is that pawn's controller.
 
-`strip` sets paint, seed, wear, and stattrak to the vanilla tuple on every skinnable entity inside the time range, including instance baselines when the range is unbounded. It does not touch protected fields. Sticker stripping is best-effort: if a sibling attribute-definition field equals 113, 117, 121, 125, or 129 (sticker slot ids), zero the adjacent value field. If the layout is not that obvious, skip stickers and warn.
+`strip` sets paint, seed, wear, and stattrak to the vanilla tuple on every skinnable entity inside the time range, including instance baselines when the range is unbounded. It does not touch protected fields. Sticker stripping zeros `m_iRawValue32` on attribute elements whose definition id is 113, 117, 121, 125, or 129. It does not zero `m_flInitialValue`. If the raw value is missing, skip that slot and warn.
 
-`set` selects one player by case-insensitive substring of the name, or by exact steam64. If several names match, refuse with an error that lists them. Optional `weapon` filters by catalog name or definition index and is never written. Apply paint, and wear/seed/stattrak when those keys are present, on weapons that player holds in the tick window. At the first update at or after `toTick`, write the pre-window values back so a later delta does not keep the temporary skin. If the cosmetic field is absent from that update, append it when `stepFieldPath` can.
+`set` selects one player by case-insensitive substring of the name, or by exact steam64. If several names match, refuse with an error that lists them. Optional `weapon` filters by catalog name or definition index and is never written. Apply paint, and wear/seed/stattrak when those keys are present, on weapons that player holds in the tick window. At the first update after `toTick`, write the pre-window values back so a later delta does not keep the temporary skin. If the cosmetic field is absent from that update, append it when `stepFieldPath` can.
+
+`knife` selects one player the same way. The target must be a knife name or id (42, 59, or 500–526). A gun name throws before any write (`ak is not a knife`). Only entities whose current definition index is already a knife are changed. Other weapons are skipped. If that player has no knife entity, warn once (`no knife matched for …`) and still return the demo. The write may also set `m_iEntityQuality` to 3 for ids 500+ and to 0 for 42 or 59, when the serializer has that field. `m_iItemIDHigh` stays protected. A client that requires `m_iItemIDHigh = -1` before it shows a fallback knife may keep the old mesh. Do not claim playback.
+
+`stickers` writes kit ids into the default slot attributes 113, 117, 121, 125, and 129, in order. One kit repeated four times is a 4x craft. An AK has four slots, so four Titan Holos always land on those slots. Wear, scale, rotation, and offset attributes are not written. 0 clears a slot. More than 5 slots throws before any write. `titan holo` is kit 76 (Titan (Holo) | Katowice 2014). Numeric sticker ids work even when they are not in the catalog. Optional `weapon` filters and is never written. The attribute vector length is the value on the `m_Attributes` path. Element index is the next path component. Kit ids are stored as the integer bits of `m_iRawValue32`, not as float(id). Later packets in the window reuse the same element indexes. Restoring a window that started with length 0 writes the length back to 0 and does not also emit element updates in that packet.
 
 `rewriteDemo(input: Uint8Array, script: EditScript, options?: { dryRun?: boolean }): RewriteResult` is the public function, re-exported from `src/index.ts` together with `inspectDemo`.
 
-After writing, parse the output and compare every entity's definition index at every tick with the input. `weaponIdentityPreserved` is true only when they match. If they do not, throw and do not return the bytes.
+After writing, parse the output and compare every entity's definition index at every tick with the index the edit meant to leave. Gun indexes must match the input. A planned knife swap is part of that expected timeline. Any other difference throws `refusing to return bytes: a weapon definition index changed` and does not return the bytes. `weaponIdentityPreserved` stays true on a returned result, including a legal knife swap.
 
 Dry run returns `output: null` and still fills `changes`.
 
 `src/edit/inspect.ts` exports `inspectDemo(input: Uint8Array): InspectReport`. Sample a weapon when its cosmetic state or owner changes, not on every tick.
 
-`src/edit/report.ts` exports `formatInspect(report)` and `formatRewrite(result)` as readable plain text. Include the weapon name, paint name, tick, and a line that states the definition index was left unchanged.
+`src/edit/report.ts` exports `formatInspect(report)` and `formatRewrite(result)` as readable plain text. Include the weapon name, paint name, and tick. When stickers are present, print the kit ids. When a knife definition changed, say the knife indexes changed and other weapons were left unchanged. Otherwise say the definition indexes were left unchanged.
 
 ## Time
 
@@ -252,7 +256,7 @@ Default tick interval is `1/64` when server info is missing. Server info is `SVC
 
 `resolveWeapon(query: string): WeaponDef | undefined` accepts the id, the display name, or an alias (`ak`, `ak47`, `ak-47`). `resolvePaint` does the same. Numeric strings are valid paint ids even when they are not in the catalog; `resolvePaint("309")` returns `{ id: 309, name: "309", aliases: [], weapons: [] }` if 309 is unknown, and the real record if it is known. `paintName(id)` returns the catalog name or null.
 
-Include the current CS2 item definition ids for pistols, SMGs, rifles, heavies, snipers, grenades, the Zeus, the C4, and the knives from Bayonet (500) through Kukri (526), skipping unused ids. Include a curated paint list of well-known finishes with correct ids (Howl 309, Dragon Lore 344, Asiimov 279, Redline 282, Vulcan 302, Fire Serpent 180, Fade 38, Case Hardened 44, Printstream 984 where that id is right — omit a skin if you are not sure of the id). Wrong paint ids are worse than a short list.
+Include the current CS2 item definition ids for pistols, SMGs, rifles, heavies, snipers, grenades, the Zeus, the C4, the stock knives (CT 42, T 59), and the knives from Bayonet (500) through Kukri (526), skipping unused ids. Include a curated paint list of well-known finishes with correct ids (Howl 309, Dragon Lore 344, Asiimov 279, Redline 282, Vulcan 302, Fire Serpent 180, Fade 38, Case Hardened 44, Printstream 984 where that id is right — omit a skin if you are not sure of the id). Wrong paint ids are worse than a short list. Sticker names are a short catalog: `titan holo` is kit 76, not a Steam market name id. Do not alias bare `titan`.
 
 ## CLI
 
@@ -260,14 +264,17 @@ Include the current CS2 item definition ids for pistols, SMGs, rifles, heavies, 
 
 - `cs2skin inspect <demo> [--json]`
 - `cs2skin paints [--search text] [--weapon ak47]`
+- `cs2skin stickers [--search text]`
 - `cs2skin weapons`
 - `cs2skin strip <demo> -o <out> [--from time] [--to time] [--dry-run] [--stickers]`
 - `cs2skin set <demo> -o <out> --player name --paint nameOrId [--weapon name] [--wear n] [--seed n] [--stattrak n] [--from time] [--to time] [--dry-run]`
+- `cs2skin knife <demo> -o <out> --player name --knife nameOrId [--from time] [--to time] [--dry-run]`
+- `cs2skin stickers <demo> -o <out> --player name (--sticker nameOrId [--count n] | --stickers id,id,...) [--weapon name] [--from time] [--to time] [--dry-run]`
 - `cs2skin apply <demo> -o <out> --script file.json [--dry-run]`
 
 `--dry-run` prints the report and does not write. Refusing to overwrite the input path when `-o` is omitted: require `-o` for writes. Exit 1 on a missing player, an ambiguous player, or `weaponIdentityPreserved === false`. Exit 0 on success, including a dry run with zero changes. Print warnings to stderr.
 
-`test/cli.test.ts` can spawn `node --experimental-strip-types src/cli.ts weapons` and assert the output contains `AK-47`. `test/edit.test.ts` builds a tiny synthetic demo through the demo and entity writers: one controller, one weapon entity with definition index 7 and paint 282, then `set` paint 309, and asserts the definition index is still 7 and the paint is 309. A second case asserts `strip` yields paint 0. A third case asserts a plan that would change the definition index throws before any write.
+`test/cli.test.ts` spawns `node --experimental-strip-types --import ./scripts/register-ts.mjs src/cli.ts weapons` and asserts the output contains `AK-47`. `stickers --search "titan holo"` contains kit 76. `test/edit.test.ts` builds a tiny synthetic demo: one controller, one AK with definition index 7 and paint 282, then `set` paint 309, and asserts the index is still 7 and the paint is 309. `strip` yields paint 0. A knife operation on that AK does not throw and does not change index 7. A knife entity at index 42 can become 507 while the AK stays 7. Four `titan holo` stickers write attribute ids 113, 117, 121, and 125 with raw bits 76. A plan that would change a gun's definition index throws before any write. A successful CLI dry run exits 0.
 
 ## Docs and CI
 

@@ -56,6 +56,10 @@ export const WEAPONS: WeaponDef[] = [
   { id: 48, name: "Incendiary", className: "weapon_incgrenade", aliases: ["inc", "incgrenade"], kind: "gear" },
   { id: 49, name: "C4", className: "weapon_c4", aliases: ["bomb"], kind: "gear" },
 
+  // Stock knives. Custom knives replace these definition indexes. The entity class stays.
+  { id: 42, name: "CT Knife", className: "weapon_knife", aliases: ["ct knife", "default ct"], kind: "knife" },
+  { id: 59, name: "T Knife", className: "weapon_knife_t", aliases: ["t knife", "default t"], kind: "knife" },
+
   // Knives (Bayonet 500 through Kukri 526, skipping unused ids)
   { id: 500, name: "Bayonet", className: "weapon_bayonet", aliases: [], kind: "knife" },
   { id: 503, name: "Classic Knife", className: "weapon_knife_css", aliases: ["classic"], kind: "knife" },

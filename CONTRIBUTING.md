@@ -15,7 +15,7 @@ npm run cs2skin -- weapons
 
 ## Weapon identity
 
-The weapon-identity invariant is tested. A synthetic demo whose weapon has definition index 7 and paint 282 must still have index 7 after a `set` to paint 309, and the paint must be 309. `strip` must yield paint 0. A plan that would change the definition index must throw before any write. Do not write `m_iItemDefinitionIndex` or the other names in `PROTECTED_FIELD_NAMES` (`m_iItemID`, `m_iItemIDHigh`, `m_iItemIDLow`, `m_iAccountID`). Cosmetic edits are limited to paint kit, seed, wear, and StatTrak.
+The weapon-identity invariant is tested. A synthetic demo whose weapon has definition index 7 and paint 282 must still have index 7 after a `set` to paint 309, and the paint must be 309. `strip` must yield paint 0. A plan that would change a gun into another item must throw before any write. Paint, strip, and sticker edits must not write `m_iItemDefinitionIndex` or the other names in `PROTECTED_FIELD_NAMES` (`m_iItemID`, `m_iItemIDHigh`, `m_iItemIDLow`, `m_iAccountID`). The knife operation may write `m_iItemDefinitionIndex` only when both ids are knives. Cosmetic edits are paint kit, seed, wear, StatTrak, knife-to-knife model, and default-slot sticker kit ids.
 
 ## Modules
 

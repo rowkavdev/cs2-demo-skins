@@ -51,6 +51,8 @@ const weaponRows: Array<[number, string, string]> = [
   [47, "Decoy", "gear"],
   [48, "Incendiary", "gear"],
   [49, "C4", "gear"],
+  [42, "CT Knife", "knife"],
+  [59, "T Knife", "knife"],
   [500, "Bayonet", "knife"],
   [503, "Classic Knife", "knife"],
   [505, "Flip Knife", "knife"],

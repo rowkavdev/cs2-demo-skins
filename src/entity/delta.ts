@@ -337,6 +337,25 @@ function readFieldBlock(
   };
 }
 
+function isVectorType(typeName: string): boolean {
+  const base = typeName.split("<")[0]?.trim().replace(/\*+$/g, "") ?? "";
+  return base === "CUtlVector" || base === "CNetworkUtlVectorBase";
+}
+
+/** A vector field's own update is its length, an unsigned varint, not an element. */
+function lengthSpec(name: string): FieldSpec {
+  return {
+    name,
+    typeName: "uint32",
+    encoder: null,
+    bitCount: null,
+    low: null,
+    high: null,
+    encodeFlags: null,
+    signedEnum: false,
+  };
+}
+
 function resolvePath(
   root: Serializer,
   path: FieldPath,
@@ -344,13 +363,30 @@ function resolvePath(
 ): { spec: FieldSpec; namePath: string[] } {
   let current = root;
   const namePath: string[] = [];
-  for (let depth = 0; depth < path.length; depth++) {
+  let depth = 0;
+  while (depth < path.length) {
     const component = path[depth];
     if (component === undefined) break;
     const field = current.fields[component];
     if (!field) throw new Error(`field path ${path.join("/")} misses ${current.name}[${component}]`);
     namePath.push(field.name);
     const leaf = depth === path.length - 1;
+    // CUtlVector<Struct> paths are [vectorField, elementIndex, ...elementFields].
+    // Embedded serializers have no index component. Stopping on the vector field reads its length.
+    if (field.serializerName && isVectorType(field.typeName)) {
+      if (leaf) return { spec: lengthSpec(field.name), namePath };
+      const index = path[depth + 1];
+      if (index === undefined) throw new Error(`field path ${path.join("/")} ends inside ${namePath.join(".")}`);
+      namePath.push(String(index).padStart(4, "0"));
+      const nested = serializers.get(field.serializerName);
+      if (!nested) throw new Error(`missing nested serializer ${field.serializerName}`);
+      if (depth + 1 >= path.length - 1) {
+        throw new Error(`field path ${path.join("/")} ends on an element index`);
+      }
+      current = nested;
+      depth += 2;
+      continue;
+    }
     if (!field.serializerName) {
       if (!leaf) throw new Error(`field path continues past ${namePath.join(".")}`);
       return { spec: field, namePath };
@@ -359,43 +395,96 @@ function resolvePath(
     if (!nested) throw new Error(`missing nested serializer ${field.serializerName}`);
     if (leaf) return { spec: field, namePath };
     current = nested;
+    depth += 1;
   }
   throw new Error("empty field path");
 }
 
+function comparePath(left: FieldPath, right: FieldPath): number {
+  const count = Math.max(left.length, right.length);
+  for (let index = 0; index < count; index++) {
+    const a = left[index] ?? -1;
+    const b = right[index] ?? -1;
+    if (a !== b) return a - b;
+  }
+  return 0;
+}
+
 function writeFields(writer: BitWriter, record: EditableRecord, warnings: string[]): void {
   if (record.kind !== "update" && record.kind !== "create") return;
-  const append = record.append ?? [];
   const fields = record.fields as EditableField[];
-  if (append.length === 1 && record.encoding) {
+  const append = orderedAppend(record.append ?? [], warnings, record.index);
+  if (record.encoding && canSplice(fields, append)) {
     const last = fields[fields.length - 1]?.path ?? [-1];
-    const step = stepFieldPath(last, append[0].path);
-    if (!step) {
-      warnings.push(`left entity ${record.index} unchanged; no single op reaches ${append[0].path.join("/")}`);
-      writer.writeSlice(record.encoding.pathBits);
-      for (const field of fields) writer.writeSlice(field.rawBits);
-      return;
+    const steps: BitSlice[] = [];
+    let cursor = last;
+    let accepted = 0;
+    for (const field of append) {
+      const step = stepFieldPath(cursor, field.path);
+      if (!step) {
+        warnings.push(
+          `entity ${record.index} kept ${append.length - accepted} field(s) unwritten; no op reaches ${field.path.join("/")}`,
+        );
+        break;
+      }
+      steps.push(step);
+      cursor = field.path;
+      accepted++;
     }
     const prefix: BitSlice = {
       bytes: record.encoding.pathBits.bytes,
       bitLength: record.encoding.finishBit,
     };
     writer.writeSlice(prefix);
-    writer.writeSlice(step);
+    for (const step of steps) writer.writeSlice(step);
     writer.writeSlice(encodeFieldPaths([]));
     for (const field of fields) writeOneValue(writer, field);
-    writeFieldValue(writer, append[0].spec, append[0].value);
+    for (let index = 0; index < accepted; index++) {
+      const field = append[index];
+      if (field) writeFieldValue(writer, field.spec, field.value);
+    }
     return;
   }
-  if (append.length === 0 && record.encoding) {
+  const merged = [
+    ...fields.map((field) => ({ path: field.path, write: () => writeOneValue(writer, field) })),
+    ...append.map((field) => ({ path: field.path, write: () => writeFieldValue(writer, field.spec, field.value) })),
+  ].sort((left, right) => comparePath(left.path, right.path));
+  try {
+    writer.writeSlice(encodeFieldPaths(merged.map((item) => item.path)));
+  } catch (error) {
+    if (!record.encoding) throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    warnings.push(`entity ${record.index} left its new fields unwritten; ${message}`);
     writer.writeSlice(record.encoding.pathBits);
     for (const field of fields) writeOneValue(writer, field);
     return;
   }
-  const paths = [...fields.map((field) => field.path), ...append.map((field) => field.path)];
-  writer.writeSlice(encodeFieldPaths(paths));
-  for (const field of fields) writeOneValue(writer, field);
-  for (const field of append) writeFieldValue(writer, field.spec, field.value);
+  for (const item of merged) item.write();
+}
+
+function orderedAppend(append: FieldAppend[], warnings: string[], entity: number): FieldAppend[] {
+  const sorted = [...append].sort((left, right) => comparePath(left.path, right.path));
+  const unique: FieldAppend[] = [];
+  for (const field of sorted) {
+    const previous = unique[unique.length - 1];
+    if (previous && comparePath(previous.path, field.path) === 0) {
+      warnings.push(`entity ${entity} skipped duplicate field ${field.path.join("/")}`);
+      continue;
+    }
+    unique.push(field);
+  }
+  return unique;
+}
+
+/** True when every appended path sits strictly after the last existing path. */
+function canSplice(fields: EditableField[], append: FieldAppend[]): boolean {
+  if (append.length === 0) return true;
+  let cursor = fields[fields.length - 1]?.path ?? [-1];
+  for (const field of append) {
+    if (comparePath(cursor, field.path) >= 0) return false;
+    cursor = field.path;
+  }
+  return true;
 }
 
 function writeOneValue(writer: BitWriter, field: EditableField): void {

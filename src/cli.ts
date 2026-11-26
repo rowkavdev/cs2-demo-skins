@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { PAINTS, WEAPONS, resolveWeapon } from "./catalog/index.js";
+import { PAINTS, STICKERS, WEAPONS, resolveWeapon } from "./catalog/index.js";
 import type { EditScript } from "./contract.js";
 import { inspectDemo } from "./edit/inspect.js";
 import { formatInspect, formatRewrite } from "./edit/report.js";
@@ -34,6 +34,10 @@ try {
     }
     process.exit(0);
   }
+  if (command === "stickers" && (!args[1] || args[1].startsWith("-"))) {
+    listStickers(parseFlags(args.slice(1)));
+    process.exit(0);
+  }
   if (command === "inspect") {
     const file = args[1];
     if (!file || file.startsWith("-")) fail("usage: cs2skin inspect <demo> [--json]");
@@ -42,8 +46,9 @@ try {
     console.log(flags.has("json") ? JSON.stringify(report, null, 2) : formatInspect(report));
     process.exit(0);
   }
-  if (command === "strip" || command === "set" || command === "apply") {
+  if (command === "strip" || command === "set" || command === "apply" || command === "knife" || command === "stickers") {
     runWrite(command, args.slice(1));
+    process.exit(0);
   }
   fail(`unknown command ${command}`);
 } catch (error) {
@@ -84,6 +89,40 @@ function scriptFrom(command: string, flags: Flags): EditScript {
           from: stringFlag(flags, "from"),
           to: stringFlag(flags, "to"),
           stickers: flags.has("stickers"),
+        },
+      ],
+    };
+  }
+  if (command === "knife") {
+    const player = stringFlag(flags, "player");
+    const knife = stringFlag(flags, "knife");
+    if (!player) fail("knife requires --player");
+    if (!knife) fail("knife requires --knife");
+    return {
+      operations: [
+        {
+          op: "knife",
+          player,
+          knife: /^-?\d+$/.test(knife) ? Number(knife) : knife,
+          from: stringFlag(flags, "from"),
+          to: stringFlag(flags, "to"),
+        },
+      ],
+    };
+  }
+  if (command === "stickers") {
+    const player = stringFlag(flags, "player");
+    if (!player) fail("stickers requires --player");
+    const weapon = stringFlag(flags, "weapon");
+    return {
+      operations: [
+        {
+          op: "stickers",
+          player,
+          weapon,
+          stickers: stickerList(flags),
+          from: stringFlag(flags, "from"),
+          to: stringFlag(flags, "to"),
         },
       ],
     };
@@ -143,6 +182,30 @@ function numberFlag(flags: Flags, name: string): number | undefined {
   return parsed;
 }
 
+function stickerList(flags: Flags): Array<string | number> {
+  const list = stringFlag(flags, "stickers");
+  if (list) {
+    const kits = list.split(",").map((item) => item.trim()).filter((item) => item.length > 0);
+    if (kits.length === 0) fail("stickers requires --sticker or --stickers");
+    return kits.map((item) => (/^-?\d+$/.test(item) ? Number(item) : item));
+  }
+  const one = stringFlag(flags, "sticker");
+  if (!one) fail("stickers requires --sticker or --stickers");
+  const count = numberFlag(flags, "count") ?? 1;
+  if (!Number.isInteger(count) || count < 1 || count > 5) fail("a weapon has at most 5 sticker slots");
+  const kit = /^-?\d+$/.test(one) ? Number(one) : one;
+  return Array.from({ length: count }, () => kit);
+}
+
+function listStickers(flags: Flags): void {
+  const search = stringFlag(flags, "search")?.toLowerCase() ?? "";
+  for (const sticker of STICKERS) {
+    const haystack = `${sticker.name} ${sticker.aliases.join(" ")}`.toLowerCase();
+    if (search && !haystack.includes(search) && String(sticker.id) !== search) continue;
+    console.log(`${sticker.id}\t${sticker.name}`);
+  }
+}
+
 function fail(message: string): never {
   throw new Error(message);
 }
@@ -151,7 +214,10 @@ function printHelp(): void {
   console.log(`cs2skin inspect <demo> [--json]
 cs2skin weapons
 cs2skin paints [--search text] [--weapon name]
+cs2skin stickers [--search text]
 cs2skin strip <demo> -o <out> [--from t] [--to t] [--stickers] [--dry-run]
 cs2skin set <demo> -o <out> --player <name> --paint <id|name> [--weapon name] [--wear n] [--seed n] [--stattrak n] [--from t] [--to t] [--dry-run]
+cs2skin knife <demo> -o <out> --player <name> --knife <name|id> [--from t] [--to t] [--dry-run]
+cs2skin stickers <demo> -o <out> --player <name> (--sticker <name|id> [--count n] | --stickers <id,id,...>) [--weapon name] [--from t] [--to t] [--dry-run]
 cs2skin apply <demo> -o <out> --script changes.json [--dry-run]`);
 }

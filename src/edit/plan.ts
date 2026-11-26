@@ -1,5 +1,6 @@
-import { resolvePaint, resolveWeapon } from "../catalog/index.js";
+import { resolveKnife, resolvePaint, resolveSticker, resolveWeapon } from "../catalog/index.js";
 import type { EditOperation, TimeRange } from "../contract.js";
+import { STICKER_SLOT_ATTRS } from "../contract.js";
 import { assertCosmeticWrite } from "./policy.js";
 import { parseDemoTime } from "../time/parse.js";
 
@@ -10,7 +11,7 @@ export type KnownPlayer = {
 };
 
 export type PlannedOp = {
-  kind: "strip" | "set";
+  kind: "strip" | "set" | "knife" | "stickers";
   range: TimeRange;
   stickers: boolean;
   player: KnownPlayer | null;
@@ -19,6 +20,8 @@ export type PlannedOp = {
   seed: number | undefined;
   wear: number | undefined;
   stattrak: number | undefined;
+  knifeId: number | null;
+  stickerKits: number[] | null;
 };
 
 export function assertNoIdentityChange(fieldName: string): void {
@@ -49,6 +52,21 @@ export function resolveWeaponFilter(weapon: string | number | undefined): number
   return found.id;
 }
 
+function blank(range: TimeRange): Omit<PlannedOp, "kind"> {
+  return {
+    range,
+    stickers: false,
+    player: null,
+    weaponId: null,
+    paint: null,
+    seed: undefined,
+    wear: undefined,
+    stattrak: undefined,
+    knifeId: null,
+    stickerKits: null,
+  };
+}
+
 export function planOperations(
   operations: EditOperation[],
   players: KnownPlayer[],
@@ -60,14 +78,45 @@ export function planOperations(
       toTick: operation.to ? parseDemoTime(operation.to, clock) : null,
     };
     if (operation.op === "strip") {
-      return { kind: "strip", range, stickers: operation.stickers === true, player: null, weaponId: null, paint: null, seed: undefined, wear: undefined, stattrak: undefined };
+      return { ...blank(range), kind: "strip", stickers: operation.stickers === true };
     }
+    if (operation.op === "knife") {
+      const query = String(operation.knife);
+      const named = resolveWeapon(query);
+      if (named && named.kind !== "knife") throw new Error(`${operation.knife} is not a knife`);
+      const knife = resolveKnife(query);
+      if (!knife) throw new Error(`unknown knife ${operation.knife}`);
+      return {
+        ...blank(range),
+        kind: "knife",
+        player: resolvePlayerQuery(operation.player, players),
+        knifeId: knife.id,
+      };
+    }
+    if (operation.op === "stickers") {
+      if (operation.stickers.length < 1 || operation.stickers.length > STICKER_SLOT_ATTRS.length) {
+        throw new Error("a weapon has at most 5 sticker slots");
+      }
+      const kits = operation.stickers.map((item) => {
+        const kit = resolveSticker(String(item));
+        if (!kit) throw new Error(`unknown sticker ${item}`);
+        return kit.id;
+      });
+      return {
+        ...blank(range),
+        kind: "stickers",
+        player: resolvePlayerQuery(operation.player, players),
+        weaponId: resolveWeaponFilter(operation.weapon),
+        stickerKits: kits,
+      };
+    }
+    const raw = operation as EditOperation;
+    if (raw.op !== "set") throw new Error(`unknown operation ${raw.op}`);
     const paint = resolvePaint(String(operation.paint));
     if (!paint) throw new Error(`unknown paint ${operation.paint}`);
     return {
+      ...blank(range),
       kind: "set",
-      range,
-      stickers: false,
       player: resolvePlayerQuery(operation.player, players),
       weaponId: resolveWeaponFilter(operation.weapon),
       paint: paint.id,

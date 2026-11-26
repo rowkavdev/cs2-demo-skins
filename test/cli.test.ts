@@ -20,4 +20,11 @@ describe("cs2skin", () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("Howl");
   });
+
+  it("lists Titan Holo", () => {
+    const result = run(["stickers", "--search", "titan holo"]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("76");
+    expect(result.stdout).toContain("Titan (Holo)");
+  });
 });

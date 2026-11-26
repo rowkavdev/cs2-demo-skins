@@ -41,13 +41,13 @@ On write, paths are encoded again and each value is emitted from `rawBits`. `wri
 
 `assertCosmeticWrite` throws on any other name. Vanilla is paint 0, seed 0, wear 0, StatTrak -1.
 
-If a cosmetic field has to be appended, the original path bits are copied up to the start of the finish symbol, one `stepFieldPath` operation is written, the finish symbol follows, and then the original value bits and the new value. If `stepFieldPath` cannot express the step, the record is left unchanged and a warning is reported.
+If cosmetic fields have to be appended, the original path bits are copied up to the finish symbol, `stepFieldPath` walks each new path that sits after the last existing one, and the finish symbol follows. A new path that sits before an existing field is merged and re-encoded. If that encode fails, the original paths are kept and value overrides are still written. A step that cannot be expressed is left off and a warning is reported.
 
 Positions, buttons, and the rest of the snapshot never pass through a decode/encode pair. Unknown protobuf fields stay in their original order. The only packet fields replaced are entity data and, if the record count changes, the updated-entry count.
 
 ## Why protected fields keep their original bits
 
-These fields identify the item. A skin change that needs a different weapon is a bug. Writers copy the bits unchanged (`PROTECTED_FIELD_NAMES`):
+These fields identify the item. Paint, strip, and sticker writes copy the bits unchanged (`PROTECTED_FIELD_NAMES`):
 
 - `m_iItemDefinitionIndex` — which weapon or item it is
 - `m_iItemID`
@@ -55,7 +55,9 @@ These fields identify the item. A skin change that needs a different weapon is a
 - `m_iItemIDLow`
 - `m_iAccountID`
 
-`isProtectedField` is true when the final path segment is one of those names, so `m_AttributeManager.m_Item.m_iItemDefinitionIndex` is protected. The stored `rawBits` are written back. The value is not decoded and re-encoded, so a varint cannot grow, shrink, or flip. `--weapon` on `set` selects by catalog name or definition index. That number is never written into the demo.
+`isProtectedField` is true when the final path segment is one of those names, so `m_AttributeManager.m_Item.m_iItemDefinitionIndex` is protected. The stored `rawBits` are written back. The value is not decoded and re-encoded, so a varint cannot grow, shrink, or flip. `--weapon` on `set` and `stickers` selects by catalog name or definition index. That number is never written into the demo.
+
+The knife operation is the exception. It may write `m_iItemDefinitionIndex` when both the current id and the target id are knives (42, 59, or 500–526). It may also set `m_iEntityQuality` to 3 for a custom knife and 0 for a stock knife. It does not write `m_iItemIDHigh`, and it does not change the entity class. A client that only shows a custom knife when `m_iItemIDHigh` is -1 may keep the old mesh. Playback is not claimed.
 
 Ownership is resolved only to decide which entities match a player. A skinnable entity is one that has a definition index. The owner pawn comes from `m_hOwnerEntity`, or from the pawn whose active weapon or weapon list contains the entity. The player is that pawn's controller. Handle indexes use `0x7fff`. `0xffffffff` and index `0x7fff` mean no entity.
 
@@ -63,16 +65,18 @@ Ownership is resolved only to decide which entities match a player. A skinnable 
 
 Items in the `instancebaseline` string table, named by decimal class id, are the same field-path blobs the game applies when an entity is created. Table messages use repeated field 1 for tables, name in field 1 and items in field 2, and each item has string field 1 and data field 2. When the editor asks for a baseline update, those bytes get the same cosmetic rewrite as a live entity update.
 
-`strip` with no time bound includes instance baselines, so a newly spawned weapon does not inherit a skin from the class baseline. Protected fields on that baseline are still copied as original bits. Sticker clearing is separate and best-effort: if a sibling attribute-definition field equals 113, 117, 121, 125, or 129, the adjacent value is zeroed. Any other layout is skipped and warned. Stickers are not weapon identity.
+`strip` with no time bound includes instance baselines, so a newly spawned weapon does not inherit a skin from the class baseline. Protected fields on that baseline are still copied as original bits. Sticker clearing zeros `m_iRawValue32` when the attribute definition is 113, 117, 121, 125, or 129. `m_flInitialValue` is left alone. Stickers are not weapon identity. Knife and sticker operations do not rewrite baselines.
 
-A timed `set` applies paint, and wear, seed, or StatTrak only when those keys are present, on weapons that player holds inside the tick window. At the first update at or after the end tick, the pre-window values are written back so a later delta does not keep the temporary skin. A missing cosmetic field on that update is appended when `stepFieldPath` can.
+A timed `set` applies paint, and wear, seed, or StatTrak only when those keys are present, on weapons that player holds inside the tick window. At the first update after the end tick, the pre-window values are written back so a later delta does not keep the temporary skin. A missing cosmetic field on that update is appended when `stepFieldPath` can. A timed knife or sticker edit restores the same way. Restoring a sticker list whose saved length was 0 writes that length and does not also emit element updates in the same packet.
+
+Sticker kit ids live on `m_AttributeList.m_Attributes` (or a flat `m_Attributes` in a test serializer). The path that ends on the vector is its length, an unsigned varint. The next component is the element index, then the element fields. Slot n uses attribute id `113 + 4n`. The raw value is a float whose IEEE bits are the kit id.
 
 ## Post-write definition-index check
 
-`rewriteDemo` builds the new file, then parses that output and compares every entity's definition index at every tick with the input. `weaponIdentityPreserved` is true only when they match. If any index differs, the function throws and does not return the bytes. Callers never receive a demo whose weapons changed.
+`rewriteDemo` builds the new file, then parses that output and compares every entity's definition index at every tick with the index the edit meant to leave. Gun indexes must match the input. A planned knife-to-knife swap is expected. `weaponIdentityPreserved` stays true on a returned result. If any other index differs, the function throws and does not return the bytes.
 
 `--dry-run` still fills `changes`, warnings, players, and the tick range, and returns `output: null`. No file is written.
 
 A demo that cannot be decoded fails during the read. The error is reported. The input is not replaced with a partial or guessed rewrite.
 
-`inspectDemo` records a weapon when its cosmetic state or owner changes, not on every tick. Reports name the weapon and the paint, and state that the definition index was left unchanged.
+`inspectDemo` records a weapon when its cosmetic state, sticker list, or owner changes, not on every tick. Reports name the weapon and the paint. A knife swap says the knife indexes changed and other weapons were left unchanged. Any other rewrite says the definition indexes were left unchanged.

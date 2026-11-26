@@ -1,4 +1,4 @@
-import { paintName, weaponName } from "../catalog/index.js";
+import { isKnifeId, paintName, weaponName } from "../catalog/index.js";
 import { BitReader } from "../bits/bit-reader.js";
 import { readBitVarU32, readUBitVar } from "../bits/ubit.js";
 import type {
@@ -20,15 +20,16 @@ import {
   DEM_SIGNON_PACKET,
   DEM_STRING_TABLES,
   DEM_FULL_PACKET,
-  SVC_SERVER_INFO,
   SERVER_INFO_TICK_INTERVAL_FIELD,
+  STICKER_SLOT_ATTRS,
+  SVC_SERVER_INFO,
 } from "../contract.js";
 import { readDemo, writeDemo } from "../demo/frame.js";
 import type { EditableField, EditableRecord, PacketContext } from "../entity/delta.js";
 import { rewritePacketBody } from "../entity/delta.js";
 import { classIdBits, parseClassInfo, parseFlattenedSerializers } from "../entity/serializer.js";
 import { decodeProto, getBytes, getFloat, getMessages, getString } from "../proto/codec.js";
-import { applyCosmeticPatch, stripPatch } from "./apply.js";
+import { applyCosmeticPatch, applyKnifeChange, applyStickerCraft, readAttributeFields, stripPatch } from "./apply.js";
 import type { CosmeticPatch } from "./apply.js";
 import { inWindow, planOperations } from "./plan.js";
 import type { KnownPlayer, PlannedOp } from "./plan.js";
@@ -37,15 +38,32 @@ import { COSMETIC_NAMES, vanillaCosmetic } from "./policy.js";
 const HANDLE_MASK = 0x7fff;
 const NO_ENTITY = 0x7fff;
 
+type AttrSlot = { def: number; raw: number };
+
 type Live = {
   className: string;
   values: Map<string, FieldValue>;
   weapons: number[];
+  attrLength: number;
+  attrs: Array<AttrSlot | undefined>;
 };
 
 type Clock = { startTick: number; tickInterval: number; endTick: number; mapName: string | null };
 
-type Restore = { paint: number; seed: number; wear: number; stattrak: number; done: boolean };
+type Restore = {
+  paint: number;
+  seed: number;
+  wear: number;
+  stattrak: number;
+  done: boolean;
+  knifeFrom: number | null;
+  stickerKits: number[];
+  stickerLength: number | null;
+};
+
+function blankLive(className: string): Live {
+  return { className, values: new Map(), weapons: [], attrLength: 0, attrs: [] };
+}
 
 export function rewriteDemo(
   input: Uint8Array,
@@ -66,20 +84,30 @@ export function rewriteDemo(
   const changes: SkinChange[] = [];
   const warnings: RewriteWarning[] = [];
   const restores = new Map<string, Restore>();
-  const inputDefs = new Map<number, number[]>();
+  const expectedDefs = new Map<number, number[]>();
+  const knifeSeen = new Set<string>();
 
   const commands = file.commands.map((command) => {
     if (!shouldTouch(command.command, baselines)) return command;
     const edited = rewritePacketBody(command.body, command.command, ctx, (records) => {
       const messages: string[] = [];
       const next = records.map((record) =>
-        editRecord(record, command.tick, ctx, world, plans, restores, changes, messages, inputDefs),
+        editRecord(record, command.tick, ctx, world, plans, restores, changes, messages, expectedDefs, knifeSeen),
       );
       return { records: next, warnings: messages };
     });
     for (const message of edited.warnings) warnings.push({ tick: command.tick, entity: -1, message });
     return { ...command, body: edited.body };
   });
+
+  const knifeMissed = new Set<string>();
+  for (const plan of plans) {
+    if (plan.kind !== "knife" || !plan.player) continue;
+    const id = plan.player.steamId || plan.player.name;
+    if (knifeSeen.has(id) || knifeMissed.has(id)) continue;
+    knifeMissed.add(id);
+    warnings.push({ tick: clock.startTick, entity: -1, message: `no knife matched for ${plan.player.name}` });
+  }
 
   const players = playersFrom(world, discovered);
   if (dryRun) {
@@ -99,7 +127,7 @@ export function rewriteDemo(
 
   const output = writeDemo({ commands });
   const outputDefs = definitionTimeline(output);
-  if (!sameTimeline(inputDefs, outputDefs)) {
+  if (!sameTimeline(expectedDefs, outputDefs)) {
     throw new Error("refusing to return bytes: a weapon definition index changed");
   }
   return {
@@ -139,7 +167,7 @@ export function describeDemo(input: Uint8Array): {
         remember(world, record, ctx);
         const sample = sampleWeapon(world, record, command.tick);
         if (!sample) continue;
-        const key = `${sample.entity}:${sample.weaponId}:${sample.paint}:${sample.owner}`;
+        const key = `${sample.entity}:${sample.weaponId}:${sample.paint}:${sample.owner}:${sample.stickers.join(",")}:${sample.quality ?? ""}`;
         if (seen.has(key) || weapons.length >= 500) continue;
         seen.add(key);
         weapons.push(sample);
@@ -167,6 +195,7 @@ function editRecord(
   changes: SkinChange[],
   warnings: string[],
   defs: Map<number, number[]>,
+  knifeSeen: Set<string>,
 ): EditableRecord {
   const previous = record.kind === "update" || record.kind === "create" ? definitionOf(record) : null;
   remember(world, record, ctx);
@@ -175,38 +204,100 @@ function editRecord(
     return record;
   }
   if (record.kind !== "update" && record.kind !== "create") return record;
-  if (previous !== null) pushDef(defs, record.index, previous);
+  let expected = previous;
   const live = world.get(record.index);
   const serializer = live ? serializerByName(ctx, live.className) : undefined;
-  if (!live || !serializer || numberValue(live.values.get("m_iItemDefinitionIndex")) === null) return record;
+  if (!live || !serializer || numberValue(live.values.get("m_iItemDefinitionIndex")) === null) {
+    if (expected !== null) pushDef(defs, record.index, expected);
+    return record;
+  }
   const baseline = record.index < 0;
   const owner = ownerOf(world, record.index);
-  const weaponId = numberValue(live.values.get("m_iItemDefinitionIndex"));
-  if (weaponId === null) return record;
+  let weaponId = numberValue(live.values.get("m_iItemDefinitionIndex"));
+  if (weaponId === null) {
+    if (expected !== null) pushDef(defs, record.index, expected);
+    return record;
+  }
 
   for (const plan of plans) {
+    if (plan.kind === "knife" && plan.player && isKnifeId(weaponId) && samePlayer(owner, plan.player)) {
+      knifeSeen.add(plan.player.steamId || plan.player.name);
+    }
     if (baseline && plan.kind !== "strip") continue;
     const key = `${plan.kind}:${plan.player?.steamId ?? plan.player?.name ?? "*"}:${record.index}`;
     if (plan.range.toTick !== null && tick > plan.range.toTick) {
       const saved = restores.get(key);
       if (saved && !saved.done) {
-        const patched = applyCosmeticPatch(record, serializer, ctx.serializers, saved, warnings);
         saved.done = true;
-        if (patched) noteChange(changes, tick, record.index, owner, weaponId, patched.before, patched.after);
+        if (plan.kind === "knife" && saved.knifeFrom !== null && isKnifeId(weaponId)) {
+          const patched = applyKnifeChange(record, serializer, ctx.serializers, weaponId, saved.knifeFrom, warnings);
+          if (patched) {
+            live.values.set("m_iItemDefinitionIndex", { kind: "int", value: patched.after });
+            weaponId = patched.after;
+            expected = patched.after;
+            const cosmetics = readLiveCosmetics(live);
+            noteChange(changes, tick, record.index, owner, weaponId, cosmetics, cosmetics, { definition: patched });
+          }
+        } else if (plan.kind === "stickers" && saved.stickerLength !== null) {
+          const kits = saved.stickerKits.length > 0 ? saved.stickerKits : (plan.stickerKits ?? []);
+          const state = { length: live.attrLength, elements: live.attrs };
+          const patched = applyStickerCraft(record, serializer, ctx.serializers, kits, state, warnings, saved.stickerLength);
+          live.attrLength = state.length;
+          if (patched) {
+            const cosmetics = readLiveCosmetics(live);
+            noteChange(changes, tick, record.index, owner, weaponId, cosmetics, cosmetics, { stickers: patched });
+          }
+        } else if (plan.kind === "strip" || plan.kind === "set") {
+          const patched = applyCosmeticPatch(record, serializer, ctx.serializers, saved, warnings);
+          if (patched) noteChange(changes, tick, record.index, owner, weaponId, patched.before, patched.after);
+        }
       }
       continue;
     }
     if (baseline ? plan.range.fromTick !== null || plan.range.toTick !== null : !inWindow(tick, plan.range)) continue;
-    if (plan.kind === "set") {
-      if (!samePlayer(owner, plan.player)) continue;
-      if (plan.weaponId !== null && plan.weaponId !== weaponId) continue;
+    if ((plan.kind === "set" || plan.kind === "stickers") && !samePlayer(owner, plan.player)) continue;
+    if ((plan.kind === "set" || plan.kind === "stickers") && plan.weaponId !== null && plan.weaponId !== weaponId) continue;
+    if (plan.kind === "knife") {
+      if (!samePlayer(owner, plan.player) || !isKnifeId(weaponId) || plan.knifeId === null) continue;
+      if (!restores.has(key)) {
+        restores.set(key, { ...readLiveCosmetics(live), done: false, knifeFrom: weaponId, stickerKits: [], stickerLength: null });
+      }
+      const patched = applyKnifeChange(record, serializer, ctx.serializers, weaponId, plan.knifeId, warnings);
+      if (patched) {
+        live.values.set("m_iItemDefinitionIndex", { kind: "int", value: patched.after });
+        live.values.set("m_iEntityQuality", { kind: "int", value: patched.after >= 500 ? 3 : 0 });
+        weaponId = patched.after;
+        expected = patched.after;
+        const cosmetics = readLiveCosmetics(live);
+        noteChange(changes, tick, record.index, owner, weaponId, cosmetics, cosmetics, { definition: patched });
+      }
+      continue;
     }
+    if (plan.kind === "stickers" && plan.stickerKits && plan.stickerKits.length > 0) {
+      if (!restores.has(key)) {
+        restores.set(key, {
+          ...readLiveCosmetics(live),
+          done: false,
+          knifeFrom: null,
+          stickerKits: slotKits(live),
+          stickerLength: live.attrLength,
+        });
+      }
+      const state = { length: live.attrLength, elements: live.attrs };
+      const patched = applyStickerCraft(record, serializer, ctx.serializers, plan.stickerKits, state, warnings);
+      live.attrLength = state.length;
+      if (patched) {
+        const cosmetics = readLiveCosmetics(live);
+        noteChange(changes, tick, record.index, owner, weaponId, cosmetics, cosmetics, { stickers: patched });
+      }
+      continue;
+    }
+    if (plan.kind !== "strip" && plan.kind !== "set") continue;
     const patch: CosmeticPatch = plan.kind === "strip"
       ? { ...stripPatch(), stickers: plan.stickers }
       : { paint: plan.paint ?? undefined, seed: plan.seed, wear: plan.wear, stattrak: plan.stattrak };
     if (!restores.has(key)) {
-      const current = readLiveCosmetics(live);
-      restores.set(key, { ...current, done: false });
+      restores.set(key, { ...readLiveCosmetics(live), done: false, knifeFrom: null, stickerKits: [], stickerLength: null });
     }
     const patched = applyCosmeticPatch(record, serializer, ctx.serializers, patch, warnings);
     if (patched) {
@@ -214,6 +305,7 @@ function editRecord(
       noteChange(changes, tick, record.index, owner, weaponId, patched.before, patched.after);
     }
   }
+  if (expected !== null) pushDef(defs, record.index, expected);
   return record;
 }
 
@@ -240,7 +332,7 @@ function remember(world: Map<number, Live>, record: EditableRecord, ctx: PacketC
   if (record.kind === "leave") return;
   if (record.kind === "delete") return;
   const className = record.kind === "create" ? classNameOf(ctx, record.classId) : (world.get(record.index)?.className ?? "");
-  const live: Live = world.get(record.index) ?? { className, values: new Map(), weapons: [] };
+  const live: Live = world.get(record.index) ?? blankLive(className);
   if (className) live.className = className;
   for (const field of record.fields as EditableField[]) {
     const leaf = field.namePath[field.namePath.length - 1] ?? "";
@@ -252,7 +344,37 @@ function remember(world: Map<number, Live>, record: EditableRecord, ctx: PacketC
       if (handle !== null && !live.weapons.includes(handle)) live.weapons.push(handle);
     }
   }
+  mergeServerAttrs(live, record.fields as EditableField[]);
   world.set(record.index, live);
+}
+
+function mergeServerAttrs(live: Live, fields: EditableField[]): void {
+  const view = readAttributeFields(fields.map((field) => ({ ...field, valueOverride: undefined })));
+  if (view.length !== null) {
+    live.attrLength = view.length;
+    live.attrs.length = Math.min(live.attrs.length, view.length);
+  }
+  for (const [index, element] of view.elements) {
+    const current = live.attrs[index] ?? { def: element.def ?? 0, raw: element.raw ?? 0 };
+    if (element.def !== undefined) current.def = element.def;
+    if (element.raw !== undefined) current.raw = element.raw;
+    live.attrs[index] = current;
+    if (index + 1 > live.attrLength) live.attrLength = index + 1;
+  }
+}
+
+function slotKits(live: Live): number[] {
+  const kits: number[] = [];
+  for (const attr of STICKER_SLOT_ATTRS) {
+    let raw: number | null = null;
+    for (let index = 0; index < live.attrLength; index++) {
+      const element = live.attrs[index];
+      if (element?.def === attr) raw = element.raw;
+    }
+    if (raw === null || raw === 0) continue;
+    kits.push(raw);
+  }
+  return kits;
 }
 
 function sampleWeapon(world: Map<number, Live>, record: EditableRecord, tick: number): InspectWeapon | null {
@@ -273,6 +395,8 @@ function sampleWeapon(world: Map<number, Live>, record: EditableRecord, tick: nu
     seed: cosmetics.seed,
     wear: cosmetics.wear,
     stattrak: cosmetics.stattrak,
+    stickers: slotKits(live),
+    quality: numberValue(live.values.get("m_iEntityQuality")),
   };
 }
 
@@ -359,17 +483,28 @@ function noteChange(
   weaponId: number,
   before: SkinChange["before"],
   after: SkinChange["after"],
+  extra?: { definition?: { before: number; after: number }; stickers?: { before: number[]; after: number[] } },
 ): void {
-  if (before.paint === after.paint && before.seed === after.seed && before.wear === after.wear && before.stattrak === after.stattrak) return;
+  const paintSame = before.paint === after.paint && before.seed === after.seed && before.wear === after.wear && before.stattrak === after.stattrak;
+  const defSame = !extra?.definition || extra.definition.before === extra.definition.after;
+  const stickerSame = !extra?.stickers || sameNumbers(extra.stickers.before, extra.stickers.after);
+  if (paintSame && defSame && stickerSame) return;
+  const shown = extra?.definition ? extra.definition.after : weaponId;
   changes.push({
     tick,
     entity,
     player: owner?.name ?? "",
-    weaponId,
-    weaponName: weaponName(weaponId) ?? String(weaponId),
+    weaponId: shown,
+    weaponName: weaponName(shown) ?? String(shown),
     before,
     after,
+    definition: extra?.definition,
+    stickers: extra?.stickers,
   });
+}
+
+function sameNumbers(left: number[], right: number[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function definitionTimeline(bytes: Uint8Array): Map<number, number[]> {

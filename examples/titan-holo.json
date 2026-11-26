@@ -1,0 +1,10 @@
+{
+  "operations": [
+    {
+      "op": "stickers",
+      "player": "s1mple",
+      "weapon": "ak",
+      "stickers": ["titan holo", "titan holo", "titan holo", "titan holo"]
+    }
+  ]
+}

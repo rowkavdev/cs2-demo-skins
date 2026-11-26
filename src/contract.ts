@@ -33,8 +33,10 @@ export const ENTITY_HANDLE_INDEX_MASK = 0x7fff;
 export const INVALID_ENTITY_HANDLE = 0xffffffff;
 
 /**
- * Fields that identify the item itself. Writers must copy these bits unchanged.
- * A skin change that needs a different weapon is a bug, not a feature.
+ * Fields that identify the item itself. Paint, seed, wear, and StatTrak edits
+ * copy these bits unchanged. The knife operation is the only writer of
+ * `m_iItemDefinitionIndex`, and only from one knife to another knife.
+ * Guns stay on their original definition index.
  */
 export const PROTECTED_FIELD_NAMES = [
   "m_iItemDefinitionIndex",
@@ -43,6 +45,13 @@ export const PROTECTED_FIELD_NAMES = [
   "m_iItemIDLow",
   "m_iAccountID",
 ] as const;
+
+/**
+ * Sticker slot id attributes. Slot n is `113 + 4n`.
+ * Wear, scale, and rotation are the next three ids and are left unset so the
+ * gun uses its default slot positions. AK-47 has four of these slots.
+ */
+export const STICKER_SLOT_ATTRS = [113, 117, 121, 125, 129] as const;
 
 export const COSMETIC_FIELDS = {
   paint: "m_nFallbackPaintKit",
@@ -203,6 +212,12 @@ export type PaintKit = {
   weapons: string[];
 };
 
+export type StickerKit = {
+  id: number;
+  name: string;
+  aliases: string[];
+};
+
 export type TimeRange = {
   /** Inclusive absolute demo command tick. Null means unbounded. */
   fromTick: number | null;
@@ -233,7 +248,33 @@ export type SetOperation = {
   to?: string;
 };
 
-export type EditOperation = StripOperation | SetOperation;
+export type KnifeOperation = {
+  op: "knife";
+  /** Player name substring or steam64. */
+  player: string;
+  /** Knife name or definition index. Only knife-to-knife changes are written. */
+  knife: string | number;
+  from?: string;
+  to?: string;
+};
+
+export type StickerOperation = {
+  op: "stickers";
+  /** Player name substring or steam64. */
+  player: string;
+  /**
+   * Sticker kit ids or catalog names, in slot order.
+   * One kit repeated four times is a 4x craft. Slot 0 is attribute 113.
+   * Positions stay on the gun's default slots. Wear, scale, and rotation are not written.
+   */
+  stickers: Array<string | number>;
+  /** Optional weapon name or definition index. Filters the target. Never written for guns. */
+  weapon?: string | number;
+  from?: string;
+  to?: string;
+};
+
+export type EditOperation = StripOperation | SetOperation | KnifeOperation | StickerOperation;
 
 export type EditScript = {
   operations: EditOperation[];
@@ -247,6 +288,10 @@ export type SkinChange = {
   weaponName: string;
   before: { paint: number; seed: number; wear: number; stattrak: number };
   after: { paint: number; seed: number; wear: number; stattrak: number };
+  /** Set when a knife operation rewrites the definition index. */
+  definition?: { before: number; after: number };
+  /** Sticker kit ids in slot order. */
+  stickers?: { before: number[]; after: number[] };
 };
 
 export type RewriteWarning = {
@@ -265,7 +310,11 @@ export type RewriteResult = {
   tickInterval: number;
   startTick: number;
   endTick: number;
-  /** True when every weapon definition index in the output matches the input. */
+  /**
+   * True when every returned demo kept gun definition indexes, and any
+   * definition change was a planned knife-to-knife swap. An unexpected
+   * definition change throws before this result exists.
+   */
   weaponIdentityPreserved: boolean;
 };
 
@@ -280,6 +329,10 @@ export type InspectWeapon = {
   seed: number;
   wear: number;
   stattrak: number;
+  /** Sticker kit ids in slot order. Empty when the weapon has no sticker attributes. */
+  stickers: number[];
+  /** `m_iEntityQuality` when that field was present. Custom knives use 3. */
+  quality: number | null;
 };
 
 export type InspectReport = {

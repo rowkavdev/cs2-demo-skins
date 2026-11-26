@@ -1,0 +1,11 @@
+{
+  "operations": [
+    {
+      "op": "knife",
+      "player": "s1mple",
+      "knife": "karambit",
+      "from": "1:00",
+      "to": "4:00"
+    }
+  ]
+}

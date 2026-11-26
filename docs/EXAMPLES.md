@@ -1,6 +1,6 @@
 # Examples
 
-`cs2skin apply` reads a JSON script. The file is an object with an `operations` array. Each entry is a `strip` or a `set`. There are no demo binaries here. Times use the same forms as the CLI: `#tick` for an absolute tick, `m:ss` from the first demo tick, and `90s` for seconds from that tick.
+`cs2skin apply` reads a JSON script. The file is an object with an `operations` array. Each entry is a `strip`, a `set`, a `knife`, or a `stickers` op. There are no demo binaries here. Times use the same forms as the CLI: `#tick` for an absolute tick, `m:ss` from the first demo tick, and `90s` for seconds from that tick.
 
 ```bash
 npx cs2skin apply match.dem -o out.dem --script examples/strip-all.json
@@ -8,7 +8,7 @@ npx cs2skin apply match.dem -o out.dem --script examples/timed-reskin.json --dry
 npx cs2skin apply match.dem -o out.dem --script examples/clear-one-player.json
 ```
 
-`--dry-run` prints the report and writes nothing. Operations run in order. `player` is a case-insensitive name substring or an exact Steam64 id. If several names match, apply stops and lists them. `weapon` filters by catalog name or definition index and is never written. Paint `0` clears a skin. None of these scripts change `m_iItemDefinitionIndex`.
+`--dry-run` prints the report and writes nothing. Operations run in order. `player` is a case-insensitive name substring or an exact Steam64 id. If several names match, apply stops and lists them. `weapon` filters by catalog name or definition index and is never written for a gun. Paint `0` clears a skin. The strip and set scripts do not change `m_iItemDefinitionIndex`. `examples/knife.json` changes a knife to another knife.
 
 ## Strip every skin
 
@@ -24,7 +24,7 @@ npx cs2skin apply match.dem -o out.dem --script examples/clear-one-player.json
 }
 ```
 
-Add `"from"` and `"to"` to limit the window. Add `"stickers": true` for a best-effort sticker clear. If the sticker layout is not the usual slot ids, those values are skipped and a warning is printed.
+Add `"from"` and `"to"` to limit the window. Add `"stickers": true` to zero sticker slot values (attribute ids 113, 117, 121, 125, 129). The initial-value float on that attribute is left alone.
 
 ## Timed reskin
 
@@ -60,6 +60,41 @@ Add `"from"` and `"to"` to limit the window. Add `"stickers": true` for a best-e
       "player": "NiKo",
       "paint": 0,
       "from": "0:00"
+    }
+  ]
+}
+```
+
+## Knife model
+
+[`examples/knife.json`](../examples/knife.json) swaps s1mple's knife for a Karambit between 1:00 and 4:00. Guns are skipped. The entity class is not changed. After 4:00 the previous knife index is written back.
+
+```json
+{
+  "operations": [
+    {
+      "op": "knife",
+      "player": "s1mple",
+      "knife": "karambit",
+      "from": "1:00",
+      "to": "4:00"
+    }
+  ]
+}
+```
+
+## Four Titan Holos
+
+[`examples/titan-holo.json`](../examples/titan-holo.json) puts kit 76 in the four default AK slots. Those slots are attributes 113, 117, 121, and 125. Positions, wear, scale, and rotation are not written.
+
+```json
+{
+  "operations": [
+    {
+      "op": "stickers",
+      "player": "s1mple",
+      "weapon": "ak",
+      "stickers": ["titan holo", "titan holo", "titan holo", "titan holo"]
     }
   ]
 }

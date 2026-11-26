@@ -1,8 +1,9 @@
-import type { PaintKit, WeaponDef } from "../contract.js";
+import type { PaintKit, StickerKit, WeaponDef } from "../contract.js";
 import { PAINTS } from "./paints.js";
+import { STICKERS } from "./stickers.js";
 import { WEAPONS } from "./weapons.js";
 
-export { PAINTS, WEAPONS };
+export { PAINTS, STICKERS, WEAPONS };
 
 const weaponsById = new Map<number, WeaponDef>();
 const weaponsByKey = new Map<string, WeaponDef>();
@@ -10,6 +11,8 @@ const paintsById = new Map<number, PaintKit>();
 const paintsByKey = new Map<string, PaintKit>();
 /** Normalized paint keys that belong to more than one kit, such as Hyper Beast. */
 const ambiguousPaintKeys = new Set<string>();
+const stickersById = new Map<number, StickerKit>();
+const stickersByKey = new Map<string, StickerKit>();
 
 /** Lowercase and drop separators so "AK-47", "ak47", and "ak 47" match. */
 function normalize(query: string): string {
@@ -98,6 +101,41 @@ export function resolvePaint(query: string): PaintKit | undefined {
     return paintsById.get(id) ?? { id, name: String(id), aliases: [], weapons: [] };
   }
   return paintsByKey.get(normalize(trimmed));
+}
+
+for (const sticker of STICKERS) {
+  if (stickersById.has(sticker.id)) throw new Error(`Duplicate sticker id ${sticker.id}`);
+  stickersById.set(sticker.id, sticker);
+  addKey(stickersByKey, sticker.name, sticker, "sticker");
+  for (const alias of sticker.aliases) addKey(stickersByKey, alias, sticker, "sticker");
+}
+
+export function isKnifeId(id: number): boolean {
+  return weaponsById.get(id)?.kind === "knife";
+}
+
+/** A knife name, alias, or definition index. Guns and unknown ids return undefined. */
+export function resolveKnife(query: string): WeaponDef | undefined {
+  const found = resolveWeapon(query);
+  if (!found) return undefined;
+  return found.kind === "knife" ? found : undefined;
+}
+
+/**
+ * Known names resolve to the curated kit. A numeric string is that kit when
+ * present, otherwise `{ id, name: String(id), aliases: [] }`. Unknown names
+ * return undefined. `titan holo` is Titan (Holo) | Katowice 2014, kit 76.
+ */
+export function resolveSticker(query: string): StickerKit | undefined {
+  const trimmed = query.trim();
+  if (!trimmed) return undefined;
+  const id = parseNumericId(trimmed);
+  if (id !== undefined) return stickersById.get(id) ?? { id, name: String(id), aliases: [] };
+  return stickersByKey.get(normalize(trimmed));
+}
+
+export function stickerName(id: number): string | null {
+  return stickersById.get(id)?.name ?? null;
 }
 
 export function paintName(id: number): string | null {
