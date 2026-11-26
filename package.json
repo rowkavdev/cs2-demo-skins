@@ -21,7 +21,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
-    "cs2skin": "node --experimental-strip-types src/cli.ts"
+    "cs2skin": "node --experimental-strip-types --import ./scripts/register-ts.mjs src/cli.ts"
   },
   "engines": {
     "node": ">=20"

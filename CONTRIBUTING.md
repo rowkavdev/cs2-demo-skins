@@ -4,10 +4,11 @@ Make small local commits. Do not commit `.dem` files. Demos do not belong in thi
 
 Do not push if the GitHub account is unavailable. Leave the work in local commits.
 
-Run the tests before you stop:
+Run the tests before you stop. Vitest is limited to one worker so a full run does not stack Node processes:
 
 ```bash
 npm test
+npm run cs2skin -- weapons
 ```
 
 `npm test` runs Vitest over `test/**/*.test.ts`. `npm run build` is `tsc`. CI runs `npm ci`, `npm test`, and `npm run build` on Ubuntu with Node 22. Local Node is `>=20`.
